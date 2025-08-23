@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Authentication Sandbox - Отчет</title>
+    <link rel="stylesheet" href="site.css">
+    <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;700;900&family=Inter:wght@300;400;600&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="container">
+        <header class="header">
+            <div class="header-content">
+                <h1 class="main-title">Authentication Sandbox</h1>
+                <p class="subtitle">Отчет по проекту аутентификации и авторизации</p>
+                <div class="bear-mascot">🐻</div>
+            </div>
+        </header>
+        <nav class="navigation">
+            <ul>
+                <li><a href="#task" class="nav-link">Задание</a></li>
+                <li><a href="#changes" class="nav-link">Изменения</a></li>
+                <li><a href="#testing" class="nav-link">Тестирование</a></li>
+            </ul>
+        </nav>
+
+        <main class="main-content">
+            <section id="task" class="section task-section">
+                <div class="section-header">
+                    <h2 class="section-title">1. Задание</h2>
+                    <div class="section-decoration">📋</div>
+                </div>
+                <div class="task-content">
+                    <div class="task-image-container">
+                        <img src="Photos/Task.png" alt="Задание" class="task-image">
+                    </div>
+                </div>
+            </section>
+
+            <section id="changes" class="section changes-section">
+                <div class="section-header">
+                    <h2 class="section-title">2. Информация о изменениях</h2>
+                    <div class="section-decoration">🔧</div>
+                </div>
+                <div class="changes-content">
+                    <div class="changes-text">
+                        <h3>Реализованные изменения:</h3>
+                        
+                        <div class="change-item">
+                            <h4>1. Имплементация работы с MongoDB для IUserRepository</h4>
+                            <p>Создан класс <code>MongoUserRepository</code>, который реализует интерфейс <code>IUserRepository</code> и обеспечивает работу с MongoDB. Реализованы все необходимые методы для работы с пользователями.</p>
+                            
+                            <div class="code-block">
+                                <h5>MongoUserRepository.cs - Основная реализация:</h5>
+                                <pre><code>public class MongoUserRepository : IUserRepository
+{
+    private readonly IMongoCollection&lt;User&gt; _users;
+
+    public MongoUserRepository(IConfiguration configuration)
+    {
+        string? connectionString = configuration["Mongo:ConnectionString"] ?? "mongodb://localhost:27017";
+        string databaseName = configuration["Mongo:Database"] ?? "AuthenticationSandbox";
+
+        MongoClient client = new MongoClient(connectionString);
+        IMongoDatabase database = client.GetDatabase(databaseName);
+        _users = database.GetCollection&lt;User&gt;("users");
+
+        EnsureIndexes();
+    }
+
+    private void EnsureIndexes()
+    {
+        // unique index on Login
+        IndexKeysDefinition&lt;User&gt; keys = Builders&lt;User&gt;.IndexKeys.Ascending(u => u.Login);
+        CreateIndexModel&lt;User&gt; model = new CreateIndexModel&lt;User&gt;(keys, new CreateIndexOptions { Unique = true });
+        _users.Indexes.CreateOne(model);
+    }
+
+    public async Task&lt;User?&gt; GetByLogin(string login)
+    {
+        return await _users.Find(u => u.Login == login).FirstOrDefaultAsync();
+    }
+
+    public async Task Insert(User user)
+    {
+        await _users.InsertOneAsync(user);
+    }
+
+    public async Task&lt;List&lt;User&gt;&gt; SelectAll()
+    {
+        return await _users.Find(Builders&lt;User&gt;.Filter.Empty).ToListAsync();
+    }
+
+    public async Task&lt;int&gt; CountAdmins()
+    {
+        long count = await _users.CountDocumentsAsync(u => u.IsAdmin);
+        return (int)count;
+    }
+
+    public async Task SetAdmin(string login, bool isAdmin)
+    {
+        FilterDefinition&lt;User&gt; filter = Builders&lt;User&gt;.Filter.Eq(u => u.Login, login);
+        UpdateDefinition&lt;User&gt; update = Builders&lt;User&gt;.Update.Set(u => u.IsAdmin, isAdmin);
+        await _users.UpdateOneAsync(filter, update);
+    }
+}</code></pre>
+                            </div>
+                        </div>
+
+                        <div class="change-item">
+                            <h4>2. Внедрение MongoDB в проект</h4>
+                            <p>В <code>Program.cs</code> заменена заглушка <code>UserRepositoryStub</code> на реальную реализацию <code>MongoUserRepository</code>:</p>
+                            
+                            <div class="code-block">
+                                <h5>Program.cs - Регистрация сервисов:</h5>
+                                <pre><code>builder.Services.AddControllers();
+builder.Services.AddSingleton&lt;UserService&gt;();
+builder.Services.AddSingleton&lt;IUserRepository, MongoUserRepository&gt;();
+builder.Services.AddSingleton&lt;IEncoder, MD5&gt;();</code></pre>
+                            </div>
+                        </div>
+
+                        <div class="change-item">
+                            <h4>3. Функция установки/снятия статуса админа</h4>
+                            <p>Реализован метод <code>SetAdmin</code> в <code>UserService</code> с защитой от удаления последнего администратора:</p>
+                            
+                            <div class="code-block">
+                                <h5>UserService.cs - Метод SetAdmin:</h5>
+                                <pre><code>public async Task SetAdmin(string login, bool isAdmin)
+{
+    User? user = await _repository.GetByLogin(login);
+    if (user == null)
+    {
+        throw new UserNotFoundException();
+    }
+
+    if (!isAdmin && user.IsAdmin)
+    {
+        int admins = await _repository.CountAdmins();
+        if (admins <= 1)
+        {
+            throw new LastAdminRemovalException();
+        }
+    }
+
+    await _repository.SetAdmin(login, isAdmin);
+}</code></pre>
+                            </div>
+                        </div>
+                        <div class="change-item">
+                            <h4>4. Создание первого админа при первом запуске</h4>
+                            <p>Реализована логика однократного создания администратора при первом запуске приложения:</p>
+                            
+                            <div class="code-block">
+                                <h5>Program.cs - Инициализация первого админа:</h5>
+                                <pre><code>using (var scope = app.Services.CreateScope())
+{
+    var users = scope.ServiceProvider.GetRequiredService&lt;IUserRepository&gt;();
+    var service = scope.ServiceProvider.GetRequiredService&lt;UserService&gt;();
+    if (await users.CountAdmins() == 0)
+    {
+        string adminApiKey = await service.Register("admin", true);
+        Console.WriteLine("admin has been created successfully, admin api key: " + adminApiKey);
+    }
+}</code></pre>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="diagram-container">
+                        <h3>Диаграмма классов:</h3>
+                        <img src="Photos/class_diagram.png" alt="Диаграмма классов" class="diagram-image">
+                        <p class="diagram-note">💡 Для лучшего качества изображения рекомендуется открыть диаграмму в новой вкладке</p>
+                    </div>
+                </div>
+            </section>
+
+            <section id="testing" class="section testing-section">
+                <div class="section-header">
+                    <h2 class="section-title">3. Тестирование обработчиков</h2>
+                    <div class="section-decoration">🧪</div>
+                </div>
+                <div class="testing-content">
+                    <div class="test-category">
+                        <h3 class="test-category-title positive">✅ Положительные тесты</h3>
+                        <div class="test-grid">
+                            <div class="test-card positive">
+                                <div class="test-card-content">
+                                    <h4>Публичный статус API</h4>
+                                    <p><strong>Метод:</strong> GET /api</p>
+                                    <p><strong>Заголовок:</strong> Не требуется</p>
+                                    <p><strong>Ожидаемый результат:</strong> 200 OK, статус</p>
+                                </div>
+                                <div class="test-card-image">
+                                    <img src="Photos/Tests/get api.png" alt="Тест публичного статуса API">
+                                </div>
+                            </div>
+                            <div class="test-card positive">
+                                <div class="test-card-content">
+                                    <h4>Публичный ping</h4>
+                                    <p><strong>Метод:</strong> GET /api/ping</p>
+                                    <p><strong>Заголовок:</strong> Не требуется</p>
+                                    <p><strong>Ожидаемый результат:</strong> 200 OK, pong</p>
+                                </div>
+                                <div class="test-card-image">
+                                    <img src="Photos/Tests/get ping.png" alt="Тест публичного ping">
+                                </div>
+                            </div>
+                            <div class="test-card positive">
+                                <div class="test-card-content">
+                                    <h4>Регистрация пользователя</h4>
+                                    <p><strong>Метод:</strong> POST /api/user</p>
+                                    <p><strong>Тело:</strong> {"login": "user123"}</p>
+                                    <p><strong>Ожидаемый результат:</strong> 200 OK, возврат API ключа</p>
+                                </div>
+                                <div class="test-card-image">
+                                    <img src="Photos/Tests/post user.png" alt="Тест регистрации пользователя">
+                                </div>
+                            </div>
+                            <div class="test-card positive">
+                                <div class="test-card-content">
+                                    <h4>Доступ к защищенному эндпоинту</h4>
+                                    <p><strong>Метод:</strong> GET /api/protected</p>
+                                    <p><strong>Заголовок:</strong> X-Api-Key: valid_key</p>
+                                    <p><strong>Ожидаемый результат:</strong> 200 OK, статус</p>
+                                </div>
+                                <div class="test-card-image">
+                                    <img src="Photos/Tests/get api protected.png" alt="Тест доступа к защищенному эндпоинту">
+                                </div>
+                            </div>
+                            <div class="test-card positive">
+                                <div class="test-card-content">
+                                    <h4>Доступ к защищенному ping</h4>
+                                    <p><strong>Метод:</strong> GET /api/protected/ping</p>
+                                    <p><strong>Заголовок:</strong> X-Api-Key: valid_key</p>
+                                    <p><strong>Ожидаемый результат:</strong> 200 OK, pong</p>
+                                </div>
+                                <div class="test-card-image">
+                                    <img src="Photos/Tests/get api protected ping.png" alt="Тест доступа к защищенному ping">
+                                </div>
+                            </div>
+                            <div class="test-card positive">
+                                <div class="test-card-content">
+                                    <h4>Получение списка пользователей (админ)</h4>
+                                    <p><strong>Метод:</strong> GET /api/user/all</p>
+                                    <p><strong>Заголовок:</strong> X-Api-Key: admin_key</p>
+                                    <p><strong>Ожидаемый результат:</strong> 200 OK, список пользователей</p>
+                                </div>
+                                <div class="test-card-image">
+                                    <img src="Photos/Tests/get api user all.png" alt="Тест получения списка пользователей">
+                                </div>
+                            </div>
+                            <div class="test-card positive">
+                                <div class="test-card-content">
+                                    <h4>Назначение админа</h4>
+                                    <p><strong>Метод:</strong> POST /api/user/admin</p>
+                                    <p><strong>Тело:</strong> {"login": "user123", "isAdmin": true}</p>
+                                    <p><strong>Ожидаемый результат:</strong> 200 OK</p>
+                                </div>
+                                <div class="test-card-image">
+                                    <img src="Photos/Tests/post api user admin true.png" alt="Тест назначения админа">
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="test-category">
+                        <h3 class="test-category-title negative">❌ Отрицательные тесты</h3>
+                        <div class="test-grid">
+                            <div class="test-card negative">
+                                <div class="test-card-content">
+                                    <h4>Регистрация с пустым логином</h4>
+                                    <p><strong>Метод:</strong> POST /api/user</p>
+                                    <p><strong>Тело:</strong> {"login": ""}</p>
+                                    <p><strong>Ожидаемый результат:</strong> 400 Bad Request</p>
+                                    <p><strong>Исключение:</strong> InvalidLoginException</p>
+                                </div>
+                                <div class="test-card-image">
+                                    <img src="Photos/Tests/post api user empty login.png" alt="Тест регистрации с пустым логином">
+                                </div>
+                            </div>
+                            <div class="test-card negative">
+                                <div class="test-card-content">
+                                    <h4>Регистрация с коротким логином</h4>
+                                    <p><strong>Метод:</strong> POST /api/user</p>
+                                    <p><strong>Тело:</strong> {"login": "ab"}</p>
+                                    <p><strong>Ожидаемый результат:</strong> 400 Bad Request</p>
+                                    <p><strong>Исключение:</strong> InvalidLoginException</p>
+                                </div>
+                                <div class="test-card-image">
+                                    <img src="Photos/Tests/post api user login ab.png" alt="Тест регистрации с коротким логином">
+                                </div>
+                            </div>
+                            <div class="test-card negative">
+                                <div class="test-card-content">
+                                    <h4>Регистрация с длинным логином</h4>
+                                    <p><strong>Метод:</strong> POST /api/user</p>
+                                    <p><strong>Тело:</strong> {"login": "verylongusername123"}</p>
+                                    <p><strong>Ожидаемый результат:</strong> 400 Bad Request</p>
+                                    <p><strong>Исключение:</strong> InvalidLoginException</p>
+                                </div>
+                                <div class="test-card-image">
+                                    <img src="Photos/Tests/post api user login verylongusername123.png" alt="Тест регистрации с длинным логином">
+                                </div>
+                            </div>
+                            <div class="test-card negative">
+                                <div class="test-card-content">
+                                    <h4>Регистрация с недопустимыми символами</h4>
+                                    <p><strong>Метод:</strong> POST /api/user</p>
+                                    <p><strong>Тело:</strong> {"login": "user@123"}</p>
+                                    <p><strong>Ожидаемый результат:</strong> 400 Bad Request</p>
+                                    <p><strong>Исключение:</strong> InvalidLoginException</p>
+                                </div>
+                                <div class="test-card-image">
+                                    <img src="Photos/Tests/post api user login with dog sign.png" alt="Тест регистрации с недопустимыми символами">
+                                </div>
+                            </div>
+                            <div class="test-card negative">
+                                <div class="test-card-content">
+                                    <h4>Дублирование логина</h4>
+                                    <p><strong>Метод:</strong> POST /api/user</p>
+                                    <p><strong>Тело:</strong> {"login": "existing_user"}</p>
+                                    <p><strong>Ожидаемый результат:</strong> 409 Conflict</p>
+                                    <p><strong>Исключение:</strong> DuplicatedLoginException</p>
+                                </div>
+                                <div class="test-card-image">
+                                    <img src="Photos/Tests/DuplicatedLoginException.png" alt="Тест дублирования логина">
+                                </div>
+                            </div>
+                            <div class="test-card negative">
+                                <div class="test-card-content">
+                                    <h4>Некорректный JSON</h4>
+                                    <p><strong>Метод:</strong> POST /api/user</p>
+                                    <p><strong>Тело:</strong> {"login": "user123" (незакрытая скобка)</p>
+                                    <p><strong>Ожидаемый результат:</strong> 400 Bad Request</p>
+                                    <p><strong>Исключение:</strong> JSON parsing error</p>
+                                </div>
+                                <div class="test-card-image">
+                                    <img src="Photos/Tests/post api user wrong json.png" alt="Тест некорректного JSON">
+                                </div>
+                            </div>
+                            <div class="test-card negative">
+                                <div class="test-card-content">
+                                    <h4>Доступ без API ключа</h4>
+                                    <p><strong>Метод:</strong> GET /api/protected</p>
+                                    <p><strong>Заголовок:</strong> Отсутствует</p>
+                                    <p><strong>Ожидаемый результат:</strong> 400 Bad Request</p>
+                                    <p><strong>Исключение:</strong> InvalidApiKeyHeader</p>
+                                </div>
+                                <div class="test-card-image">
+                                    <img src="Photos/Tests/empty X-Api-Key.png" alt="Тест доступа без API ключа">
+                                </div>
+                            </div>
+                            <div class="test-card negative">
+                                <div class="test-card-content">
+                                    <h4>Неверный API ключ</h4>
+                                    <p><strong>Метод:</strong> GET /api/protected</p>
+                                    <p><strong>Заголовок:</strong> X-Api-Key: invalid_key</p>
+                                    <p><strong>Ожидаемый результат:</strong> 401 Unauthorized</p>
+                                    <p><strong>Исключение:</strong> UserNotFoundException</p>
+                                </div>
+                                <div class="test-card-image">
+                                    <img src="Photos/Tests/get api protected with invalid key.png" alt="Тест неверного API ключа">
+                                </div>
+                            </div>
+                            <div class="test-card negative">
+                                <div class="test-card-content">
+                                    <h4>Доступ к админскому эндпоинту обычным пользователем</h4>
+                                    <p><strong>Метод:</strong> GET /api/user/all</p>
+                                    <p><strong>Заголовок:</strong> X-Api-Key: user_key</p>
+                                    <p><strong>Ожидаемый результат:</strong> 403 Forbidden</p>
+                                    <p><strong>Исключение:</strong> AccessDenied</p>
+                                </div>
+                                <div class="test-card-image">
+                                    <img src="Photos/Tests/get api user all with common user key.png" alt="Тест доступа к админскому эндпоинту">
+                                </div>
+                            </div>
+                            <div class="test-card negative">
+                                <div class="test-card-content">
+                                    <h4>Назначение админа обычным пользователем</h4>
+                                    <p><strong>Метод:</strong> POST /api/user/admin</p>
+                                    <p><strong>Тело:</strong> {"login": "user123", "isAdmin": true}</p>
+                                    <p><strong>Заголовок:</strong> X-Api-Key: user_key</p>
+                                    <p><strong>Ожидаемый результат:</strong> 403 Forbidden</p>
+                                    <p><strong>Исключение:</strong> AccessDenied</p>
+                                </div>
+                                <div class="test-card-image">
+                                    <img src="Photos/Tests/post api user admin with common user key.png" alt="Тест назначения админа обычным пользователем">
+                                </div>
+                            </div>
+                            <div class="test-card negative">
+                                <div class="test-card-content">
+                                    <h4>Назначение админа несуществующему пользователю</h4>
+                                    <p><strong>Метод:</strong> POST /api/user/admin</p>
+                                    <p><strong>Тело:</strong> {"login": "nonexistent_user", "isAdmin": true}</p>
+                                    <p><strong>Ожидаемый результат:</strong> 404 Not Found</p>
+                                    <p><strong>Исключение:</strong> UserNotFoundException</p>
+                                </div>
+                                <div class="test-card-image">
+                                    <img src="Photos/Tests/post api user admin nonexistent_user.png" alt="Тест назначения админа несуществующему пользователю">
+                                </div>
+                            </div>
+                            <div class="test-card negative">
+                                <div class="test-card-content">
+                                    <h4>Удаление последнего админа</h4>
+                                    <p><strong>Метод:</strong> POST /api/user/admin</p>
+                                    <p><strong>Тело:</strong> {"login": "last_admin", "isAdmin": false}</p>
+                                    <p><strong>Ожидаемый результат:</strong> 409 Conflict</p>
+                                    <p><strong>Исключение:</strong> LastAdminRemovalException</p>
+                                </div>
+                                <div class="test-card-image">
+                                    <img src="Photos/Tests/LastAdminRemovalException.png" alt="Тест удаления последнего админа">
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </main>
+
+        <footer class="footer">
+            <div class="footer-content">
+                <p>&copy; 2025 Authentication Sandbox Project</p>
+                <p>Создано в стиле The College Dropout</p>
+            </div>
+        </footer>
+    </div>
+
+    <script src="site.js"></script>
+</body>
+</html>
